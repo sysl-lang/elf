@@ -12,7 +12,7 @@ bytes. It opens no files, so the same code serves a host tool, an emulator, an o
 
 ```hocon
 dependencies {
-  elf { git = "github.com/sysl-lang/elf", version = "0.1.0" }
+  elf { git = "github.com/sysl-lang/elf", version = "0.1.1" }
 }
 ```
 
@@ -67,7 +67,7 @@ is left out of the build, and a file in that format is refused as `ElfError.Unsu
 ```hocon
 dependencies {
   elf {
-    git = "github.com/sysl-lang/elf", version = "0.1.0"
+    git = "github.com/sysl-lang/elf", version = "0.1.1"
     options = { elf64 = false, big_endian = false, place_by = "virtual" }
   }
 }
