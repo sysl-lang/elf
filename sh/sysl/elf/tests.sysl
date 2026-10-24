@@ -1,0 +1,412 @@
+module sh.sysl.elf
+@tests
+
+// Five files built by `fixtures/build.sh` with GCC and LLVM, one per shape that reads differently:
+// ELF-32 and ELF-64, little- and big-endian, an executable, a relocatable object and a shared
+// library, on ARM, AArch64, RISC-V and x86-64. Every value asserted below was read from the file with
+// `llvm-readelf`, not from this package.
+
+import sysl.buf.{Buf, buf}
+import sysl.text.from_utf8_lossy
+
+val arm = embed("../../../fixtures/arm.elf")
+val aarch64 = embed("../../../fixtures/aarch64.elf")
+val big = embed("../../../fixtures/big.o")
+val riscv = embed("../../../fixtures/riscv.elf")
+val shared = embed("../../../fixtures/shared.so")
+
+// Whether this build reads a file of that class and byte order. The suite is run under each setting
+// of the options (README § Testing), and a fixture the build does not read must be refused as
+// unsupported rather than misread.
+reads(is64: bool, big: bool) -> bool =
+    (if is64 then option_elf64 else option_elf32) && (if big then option_big_endian else option_little_endian)
+
+// A fixture this build does not read is refused as unsupported, which is the whole of its test.
+unread(bytes: []const u8, is64: bool, big: bool) -> bool
+    if reads(is64, big) then return false
+
+    assert(refused(bytes, ElfError.Unsupported), "a format this build leaves out is refused as unsupported")
+    true
+
+opened(bytes: []const u8) -> Elf = read(bytes) match
+    Ok(e) -> e
+    Err(e) -> panic(s"the fixture did not read: $e")
+
+names(e: Elf) -> Buf[string]
+    var all: Buf[string] = buf()
+
+    for s in e.sections().view() do all.push(from_utf8_lossy(s.name))
+
+    all
+
+// ---------------------------------------------------------------------------------------------------
+// ELF-32, little-endian ARM executable.
+
+@test("an ELF-32 ARM executable's header")
+elf_arm_header()
+    if unread(arm, false, false) then return
+
+    val h = opened(arm).header
+
+    assert(!h.is64 && !h.big_endian && h.abi == 0 && h.abi_version == 0, "ELF-32, little-endian, System V")
+    assert(h.kind == ET_EXEC && h.machine == EM_ARM && h.version == 1, "an ARM executable")
+    assert(h.entry == 0x10000021 && h.flags == 0x5000200, "entry and flags")
+    assert(h.phoff == 52 && h.phentsize == 32 && h.phnum == 2, "program headers")
+    assert(h.shoff == 8676 && h.shentsize == 40 && h.shnum == 9 && h.shstrndx == 8, "section headers")
+    assert(h.ehsize == 52, "header size")
+
+@test("its segments: code in flash, and data loaded after the code but run from RAM")
+elf_arm_segments()
+    if unread(arm, false, false) then return
+
+    val e = opened(arm)
+    val s = e.segments()
+
+    assert(s.len() == 2, "two")
+
+    val code = s.at(0)
+    val data = s.at(1)
+
+    assert(code.kind == PT_LOAD && code.offset == 0x1000 && code.vaddr == 0x10000000, "code")
+    assert(code.paddr == 0x10000000 && code.filesz == 0x2C && code.memsz == 0x2C, "code sizes")
+    assert(code.flags == PF_R | PF_X && code.align == 0x1000, "code is read and execute")
+    assert(data.kind == PT_LOAD && data.offset == 0x2000 && data.vaddr == 0x20000000, "data")
+    assert(data.paddr == 0x1000002C && data.filesz == 4 && data.memsz == 0x104, "data loads after the code")
+    assert(data.flags == PF_R | PF_W, "data is read and write")
+
+    val bytes = e.segment_bytes(data).unwrap()
+
+    assert(bytes.len == 4 && bytes[0] == 42 && bytes[1] == 0, "the initial value of counter")
+
+@test("its sections, by index and by name; .bss has no bytes in the file")
+elf_arm_sections()
+    if unread(arm, false, false) then return
+
+    val e = opened(arm)
+    val n = names(e)
+    val want: []string = ["", ".text", ".data", ".bss", ".comment", ".ARM.attributes", ".symtab", ".strtab", ".shstrtab"]
+
+    assert(n.len() == want.len, "nine")
+    for i in 0..<want.len do assert(n.at(i) == want[i], s"section $i is ${want[i]}")
+
+    val text = e.section(1)
+
+    assert(text.kind == SHT_PROGBITS && text.addr == 0x10000000 && text.offset == 0x1000 && text.size == 0x2C, ".text")
+    assert(text.flags == SHF_ALLOC | SHF_EXECINSTR && text.addralign == 4, ".text is code")
+
+    val bss = e.section_named(".bss").unwrap()
+
+    assert(bss.kind == SHT_NOBITS && bss.addr == 0x20000004 && bss.size == 0x100, ".bss")
+    assert(e.section_bytes(bss).unwrap().len == 0, "takes nothing from the file")
+
+    val symtab = e.section_named(".symtab").unwrap()
+
+    assert(symtab.kind == SHT_SYMTAB && symtab.entsize == 16 && symtab.link == 7 && symtab.info == 12, ".symtab")
+    assert(e.section_named(".nothing").is_none(), "no such section")
+    assert(e.section(0).kind == SHT_NULL && e.section(0).name.len == 0, "the null section")
+
+@test("its symbols: functions with the Thumb bit, objects, a file, and the null symbol")
+elf_arm_symbols()
+    if unread(arm, false, false) then return
+
+    val e = opened(arm)
+    val all = e.symbols().unwrap()
+
+    assert(all.len() == 16, "sixteen")
+
+    val null_sym = all.at(0)
+
+    assert(null_sym.name.len == 0 && null_sym.shndx == SHN_UNDEF, "the null symbol")
+
+    val file = all.at(6)
+
+    assert(file.name == "arm.c".bytes && file.kind == STT_FILE && file.bind == STB_LOCAL && file.shndx == SHN_ABS, "the file")
+
+    val start = all.at(13)
+
+    assert(start.name == "_start".bytes && start.value == 0x10000021 && start.size == 10, "_start")
+    assert(start.kind == STT_FUNC && start.bind == STB_GLOBAL && start.shndx == 1 && start.other == 0, "a global function")
+
+    val table = e.symbol_named("table").unwrap().unwrap()
+
+    assert(table.value == 0x20000004 && table.size == 256 && table.kind == STT_OBJECT && table.shndx == 3, "table")
+    assert(e.symbol_named("nothing").unwrap().is_none(), "no such symbol")
+    assert(e.dynamic_symbols().unwrap().len() == 0, "no dynamic symbols in a static executable")
+
+// ---------------------------------------------------------------------------------------------------
+// ELF-64: AArch64, RISC-V, x86-64.
+
+@test("an ELF-64 AArch64 executable: header, every segment kind, data and symbols")
+elf_aarch64()
+    if unread(aarch64, true, false) then return
+
+    val e = opened(aarch64)
+    val h = e.header
+
+    assert(h.is64 && !h.big_endian && h.kind == ET_EXEC && h.machine == EM_AARCH64, "ELF-64 AArch64")
+    assert(h.entry == 0x210168 && h.phoff == 64 && h.shoff == 720 && h.ehsize == 64, "addresses")
+    assert(h.phentsize == 56 && h.phnum == 5 && h.shentsize == 64 && h.shnum == 7 && h.shstrndx == 5, "tables")
+
+    val s = e.segments()
+    val phdr = s.at(0)
+    val data = s.at(3)
+    val stack = s.at(4)
+
+    assert(phdr.kind == PT_PHDR && phdr.offset == 0x40 && phdr.vaddr == 0x200040 && phdr.filesz == 0x118, "PHDR")
+    assert(phdr.flags == PF_R && phdr.align == 8, "PHDR is read-only")
+    assert(data.kind == PT_LOAD && data.offset == 0x170 && data.vaddr == 0x220170 && data.memsz == 8, "data")
+    assert(data.align == 0x10000, "64 KB aligned")
+    assert(stack.kind == 0x6474E551 && stack.flags == PF_R | PF_W, "GNU_STACK, read and write")
+
+    val bytes = e.section_bytes(e.section_named(".data").unwrap()).unwrap()
+
+    assert(bytes.len == 8 && bytes[0] == 7 && bytes[7] == 0, "answer is 7, as eight bytes")
+
+    val all = e.symbols().unwrap()
+
+    assert(all.len() == 8, "eight symbols")
+
+    val answer = e.symbol_named("answer").unwrap().unwrap()
+    val twice = e.symbol_named("twice").unwrap().unwrap()
+
+    assert(answer.value == 0x220170 && answer.size == 8 && answer.kind == STT_OBJECT && answer.shndx == 2, "answer")
+    assert(twice.value == 0x210158 && twice.size == 16 && twice.kind == STT_FUNC, "twice")
+
+@test("an ELF-64 RISC-V executable")
+elf_riscv()
+    if unread(riscv, true, false) then return
+
+    val e = opened(riscv)
+    val h = e.header
+
+    assert(h.is64 && h.kind == ET_EXEC && h.machine == EM_RISCV && h.entry == 0x1119C, "RISC-V")
+    assert(h.phnum == 6 && h.shnum == 8, "tables")
+
+    var loads: Buf[Segment] = buf()
+
+    for s in e.segments().view()
+        if s.kind == PT_LOAD then loads.push(s)
+
+    assert(loads.len() == 3, "three loads")
+    assert(loads.at(1).vaddr == 0x11190 && loads.at(1).filesz == 0xE && loads.at(1).flags == PF_R | PF_X, "code")
+    assert(loads.at(2).vaddr == 0x121A0 && loads.at(2).filesz == 4 && loads.at(2).flags == PF_R | PF_W, "data")
+
+    val deeper = e.symbol_named("deeper").unwrap().unwrap()
+    val start = e.symbol_named("_start").unwrap().unwrap()
+
+    assert(deeper.value == 0x11190 && deeper.size == 12, "deeper")
+    assert(start.value == 0x1119C && start.size == 2 && start.value == h.entry, "_start is the entry")
+
+@test("an x86-64 shared library: its dynamic and static symbol tables are two answers")
+elf_shared()
+    if unread(shared, true, false) then return
+
+    val e = opened(shared)
+    val h = e.header
+
+    assert(h.is64 && h.kind == ET_DYN && h.machine == EM_X86_64 && h.entry == 0, "an x86-64 shared library")
+    assert(h.phnum == 9 && h.shnum == 16, "tables")
+
+    val dynamic = e.dynamic_symbols().unwrap()
+
+    assert(dynamic.len() == 3, "three dynamic symbols")
+    assert(dynamic.at(1).name == "shared_add".bytes && dynamic.at(1).value == 0x1330 && dynamic.at(1).size == 12, "shared_add")
+    assert(dynamic.at(1).kind == STT_FUNC && dynamic.at(1).bind == STB_GLOBAL && dynamic.at(1).shndx == 7, "a global function")
+    assert(dynamic.at(2).name == "shared_count".bytes && dynamic.at(2).value == 0x33D8 && dynamic.at(2).shndx == 11, "shared_count")
+
+    val local = e.symbols().unwrap()
+
+    assert(local.len() == 5, "five static symbols")
+    assert(local.at(2).name == "_DYNAMIC".bytes && local.at(2).bind == STB_LOCAL && local.at(2).other == 2, "a hidden local")
+
+// ---------------------------------------------------------------------------------------------------
+// Big-endian.
+
+@test("a big-endian ARM object: every field reads the other way round")
+elf_big_endian()
+    if unread(big, false, true) then return
+
+    val e = opened(big)
+    val h = e.header
+
+    assert(!h.is64 && h.big_endian && h.kind == ET_REL && h.machine == EM_ARM, "a big-endian ARM object")
+    assert(h.flags == 0x5000000 && h.entry == 0 && h.phnum == 0 && h.phoff == 0, "no entry and no segments")
+    assert(h.shoff == 424 && h.shnum == 12 && h.shstrndx == 1, "section headers")
+    assert(e.segments().len() == 0, "an object has no segments")
+
+    val rel = e.section(3)
+
+    assert(rel.name == ".rel.text".bytes && rel.kind == SHT_REL && rel.entsize == 8, ".rel.text")
+    assert(rel.link == 11 && rel.info == 2 && rel.flags == 0x40, "its symbol table, its section, INFO_LINK")
+
+    val data = e.section_bytes(e.section_named(".data").unwrap()).unwrap()
+
+    assert(data.len == 4 && data[0] == 1 && data[3] == 4, "0x01020304, most significant byte first")
+
+    val value = e.symbol_named("big_value").unwrap().unwrap()
+    val reader = e.symbol_named("read_big").unwrap().unwrap()
+
+    assert(value.size == 4 && value.kind == STT_OBJECT && value.shndx == 6, "big_value")
+    assert(reader.size == 16 && reader.kind == STT_FUNC && reader.bind == STB_GLOBAL && reader.shndx == 2, "read_big")
+
+// ---------------------------------------------------------------------------------------------------
+// What is refused, and what a damaged file still answers.
+
+copy_of(bytes: []const u8) -> Buf[u8]
+    var b: Buf[u8] = buf()
+
+    b.extend(bytes)
+    b
+
+// Write `x` little-endian at `at`.
+patch32(b: *Buf[u8], at: usize, x: u32)
+    for i in 0usize..<4 do b.set(at + i, u8((x >> (u32(i) * 8)) & 0xFF))
+
+refused(bytes: []const u8, want: ElfError) -> bool = read(bytes) match
+    Ok(_) -> false
+    Err(e) -> e == want
+
+@test("what is not an ELF file, or not one this reads, is refused by name")
+elf_refused()
+    assert(refused([], ElfError.NotElf), "empty")
+    val wrong: []u8 = [0x7F, u8('E'), u8('L'), u8('G'), 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+
+    assert(refused(wrong, ElfError.NotElf), "the wrong magic")
+
+    var b = copy_of(arm)
+
+    b.set(4, 3)
+    assert(refused(b.view(), ElfError.BadIdent), "class 3")
+    b = copy_of(arm)
+    b.set(5, 0)
+    assert(refused(b.view(), ElfError.BadIdent), "byte order 0")
+
+    if reads(false, false)
+        assert(refused(arm[..<40], ElfError.Truncated), "ends inside the ELF-32 header")
+        assert(refused(arm[..<8000], ElfError.Truncated), "the section header table is past the end")
+        b = copy_of(arm)
+        b.set(42, 16)
+        assert(refused(b.view(), ElfError.Malformed), "program headers smaller than the specification's")
+
+    if reads(true, false)
+        assert(refused(aarch64[..<60], ElfError.Truncated), "ends inside the ELF-64 header")
+        assert(refused(aarch64[..<100], ElfError.Truncated), "the program header table is past the end")
+
+// ---------------------------------------------------------------------------------------------------
+// Loading.
+
+// `size` bytes of 0xEE, so what `load` wrote, zeroed and left alone can each be told apart.
+filled(size: usize) -> Buf[u8]
+    var b: Buf[u8] = buf()
+
+    for i in 0..<size do b.push(0xEE)
+
+    b
+
+@test("load places each segment where place_by says, copies its bytes and zeroes the rest")
+elf_load()
+    if unread(arm, false, false) then return
+
+    val e = opened(arm)
+    val text = e.section_bytes(e.section_named(".text").unwrap()).unwrap()
+    var flash = filled(0x10000)
+    var ram = filled(0x4000)
+    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+
+    assert(load(e, regions).unwrap() == 0x10000021, "the entry point")
+
+    for i in 0..<text.len do assert(flash.at(i) == text[i], ".text is at the start of flash")
+
+    // .data is four bytes, 42, followed by .bss's 256 zeroed; past that nothing was written.
+    if option_place_by == "physical"
+        assert(flash.at(0x2C) == 42 && flash.at(0x2F) == 0, ".data is loaded after .text, in flash")
+        assert(flash.at(0x30) == 0 && flash.at(0x12F) == 0, "and .bss is zeroed after it")
+        assert(flash.at(0x130) == 0xEE && ram.at(0) == 0xEE, "and nothing else is touched")
+    else
+        assert(ram.at(0) == 42 && ram.at(3) == 0, ".data is placed where it runs, in RAM")
+        assert(ram.at(4) == 0 && ram.at(0x103) == 0, "and .bss is zeroed after it")
+        assert(ram.at(0x104) == 0xEE && flash.at(0x2C) == 0xEE, "and nothing else is touched")
+
+@test("a segment outside every region, or across two, is refused before anything is written")
+elf_load_unplaced()
+    if unread(arm, false, false) then return
+
+    val e = opened(arm)
+
+    // Flash only as large as .text: the data segment, wherever place_by puts it, has nowhere to go.
+    var small = filled(0x2C)
+    val only_text: []Region = [Region(0x10000000, small.view())]
+
+    assert(load(e, only_text).is_err(), "refused")
+    for i in 0..<small.len() do assert(small.at(i) == 0xEE, "and .text was not written either")
+
+    // Two regions that meet inside the data segment, wherever place_by puts it.
+    val data = e.segment(1)
+    val at = address_of(data)
+    var low = filled(usize(at - 0x10000000 + 2))
+    var high = filled(0x4000)
+    val split: []Region = [Region(0x10000000, low.view()), Region(at + 2, high.view())]
+
+    load(e, split) match
+        Ok(_) -> assert(false, "a segment across two regions is refused")
+        Err(why) -> assert(why == ElfError.Unplaced, "as unplaced")
+
+@test("an ELF-64 executable loads the same way, and a relocatable object loads nothing")
+elf_load_64()
+    if !unread(riscv, true, false)
+        val e = opened(riscv)
+        var mem = filled(0x3000)
+        val regions: []Region = [Region(0x10000, mem.view())]
+
+        assert(load(e, regions).unwrap() == 0x1119C, "the entry point")
+        assert(mem.at(0x21A0) == 3 && mem.at(0x21A3) == 0, "level is 3, at 0x121A0")
+
+    if !unread(big, false, true)
+        val o = opened(big)
+        var mem = filled(16)
+        val regions: []Region = [Region(0, mem.view())]
+
+        assert(load(o, regions).unwrap() == 0, "an object has no segments and no entry")
+        assert(mem.at(0) == 0xEE, "and writes nothing")
+
+@test("contents past the end, a short symbol entry and an unterminated name are refused when asked for")
+elf_damaged()
+    if unread(arm, false, false) then return
+
+    val e = opened(arm)
+    var far = e.segment(1)
+
+    // The file is 9036 bytes: four from 9032 are its last four, and from 9033 one too many.
+    far.offset = 9032
+    assert(e.segment_bytes(far).is_ok(), "a segment ending at the end")
+    far.offset = 9033
+    assert(e.segment_bytes(far).is_err(), "a segment ending one byte past the end")
+
+    var huge = e.section(1)
+
+    huge.size = 0xFFFFFFFFFFFFFFFF
+    assert(e.section_bytes(huge).is_err(), "a section whose size overflows")
+
+    // .symtab is section 6, its header at 8676 + 6 * 40 and its entsize 36 bytes into that.
+    var b = copy_of(arm)
+
+    patch32(&b, 8676 + 6 * 40 + 36, 8)
+    assert(opened(b.view()).symbols().is_err(), "symbol entries smaller than the specification's")
+
+    // Symbol 13's name, at .symtab's offset 0x2078 plus 13 entries, pointed at the end of .strtab.
+    b = copy_of(arm)
+    patch32(&b, 0x2078 + 13 * 16, 0x27)
+    assert(opened(b.view()).symbols().is_err(), "a name past the end of its string table")
+
+@test("a section-name table index past the table leaves names empty and the rest readable")
+elf_no_names()
+    if unread(arm, false, false) then return
+
+    var b = copy_of(arm)
+
+    b.set(50, 99)
+
+    val e = opened(b.view())
+
+    assert(e.section(1).name.len == 0 && e.section(1).addr == 0x10000000, "no name, the rest intact")
+    assert(e.symbols().unwrap().len() == 16, "symbols still read")

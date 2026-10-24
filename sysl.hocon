@@ -1,0 +1,38 @@
+// ELF files read for sysl: the file header, segments, sections and symbols, from bytes the caller
+// already has, for ELF-32 and ELF-64 in either byte order.
+//
+// This is the block a consumer writes to reach it:
+//
+//     dependencies {
+//       elf { git = "github.com/sysl-lang/elf", version = "0.1.0" }
+//     }
+//
+// The coordinate names the package, `elf`; the module a program imports is `sh.sysl.elf`.
+
+package {
+  name    = "elf"
+  version = "0.1.0"
+  sysl    = "0.5.5"
+}
+
+// The tables a file has are not known until it is read, so `segments`, `sections` and `symbols` are
+// built on the heap. Nothing here opens a file.
+requires {
+  heap = true
+}
+
+// A consumer that knows what it will be given turns the rest off, and the code that reads it is left
+// out of the build; a file of a format turned off is refused as `ElfError.Unsupported`. At least one
+// class and one byte order stay on.
+options {
+  elf32         { type = bool, default = true, doc = "read ELF-32 files" }
+  elf64         { type = bool, default = true, doc = "read ELF-64 files" }
+  little_endian { type = bool, default = true, doc = "read little-endian files" }
+  big_endian    { type = bool, default = true, doc = "read big-endian files" }
+  place_by {
+    type    = string
+    values  = ["physical", "virtual"]
+    default = "physical"
+    doc     = "where `load` puts a segment: its load address, as a debugger or flash programmer does, or its run address, as an operating system's loader does"
+  }
+}
