@@ -81,6 +81,13 @@ dependencies {
 | `big_endian` | `true` | read big-endian files |
 | `place_by` | `"physical"` | where `load` puts a segment: its load address (`"physical"`, as a debugger or flash programmer does; a program running from flash copies `.data` to RAM itself) or its run address (`"virtual"`, as an operating system's loader does) |
 
+`load` zeroes a segment's memory size beyond its file size (`.bss`) when the segment is placed by run
+address, or when its load and run addresses are equal. A segment placed by a load address that differs
+from its run address (a flash-linked `.bss`: stored in flash, run in RAM) gets only its file bytes
+there, as gdb `load` and picotool write them, because the program zeroes `.bss` itself at the run
+address; before 0.1.4 the zeros were written over whatever followed the segment in flash. A segment
+that then writes nothing needs no region.
+
 At least one class and one byte order stay on. A build with neither is refused:
 `assertion failed: the elf package reads no class: turn on elf32 or elf64`.
 

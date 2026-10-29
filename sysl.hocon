@@ -4,15 +4,15 @@
 // This is the block a consumer writes to reach it:
 //
 //     dependencies {
-//       elf { git = "github.com/sysl-lang/elf", version = "0.1.3" }
+//       elf { git = "github.com/sysl-lang/elf", version = "0.1.4" }
 //     }
 //
 // The coordinate names the package, `elf`; the module a program imports is `sh.sysl.elf`.
 
 package {
   name    = "elf"
-  version = "0.1.3"
-  sysl    = "0.7.7"
+  version = "0.1.4"
+  sysl    = "0.8.0"
 }
 
 exclude = ["fixtures"]
@@ -35,6 +35,6 @@ options {
     type    = string
     values  = ["physical", "virtual"]
     default = "physical"
-    doc     = "where `load` puts a segment: its load address, as a debugger or flash programmer does, or its run address, as an operating system's loader does"
+    doc     = "where `load` puts a segment: its load address, as a debugger or flash programmer does (file bytes only, unless the run address is the same), or its run address, as an operating system's loader does (the tail is zeroed)"
   }
 }

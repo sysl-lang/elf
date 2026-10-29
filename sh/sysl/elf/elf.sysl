@@ -12,8 +12,9 @@ module sh.sysl.elf
 // read for the rest. Nothing is copied: names and contents are views of the caller's bytes.
 //
 // **`load` places a file's segments in memory the caller owns**, described as regions, at the address
-// the `place_by` option names, and zeroes the part of each segment the file has no bytes for. It
-// checks every segment before it writes any, so memory is untouched when a file is refused.
+// the `place_by` option names, and zeroes the part of each segment the file has no bytes for, except
+// where that would write over the image: a segment placed by load address whose run address differs
+// (`.bss` of a program linked to run from flash) gets only its file bytes. It checks every segment before it writes any, so memory is untouched when a file is refused.
 //
 // **The options `elf32`, `elf64`, `little_endian` and `big_endian` choose the formats read.** Each is a
 // constant, so a test of one that is off folds to `false` and what it guarded is not in the build.
@@ -403,9 +404,20 @@ struct Region
 // Where `load` puts a segment, as the `place_by` option chose.
 address_of(s: Segment) -> u64 = if option_place_by == "virtual" then s.vaddr else s.paddr
 
-// Place every loadable segment of `e` in `regions`, each wholly inside one, its file bytes copied and
-// the rest of its memory size zeroed; answer the entry point. Every segment is checked before any is
-// written, so a refusal leaves the regions as they were.
+// Whether `load` zeroes the part of a segment's memory the file has no bytes for (`.bss`). A segment
+// placed by its run address is zeroed, as a loader does. One placed by its load address is zeroed only
+// when that is also its run address; otherwise the load address is where the image is stored (flash),
+// the program zeroes the tail itself at the run address, and writing zeros there would overwrite
+// whatever the image keeps after the segment, as a debugger or flash programmer never does.
+zeroes_tail(s: Segment) -> bool = option_place_by == "virtual" || s.paddr == s.vaddr
+
+// How many bytes `load` writes for a segment, starting at its address.
+extent_of(s: Segment) -> u64 = if zeroes_tail(s) then s.memsz else s.filesz
+
+// Place every loadable segment of `e` in `regions`, each written part wholly inside one, its file bytes
+// copied and, where `zeroes_tail` says so, the rest of its memory size zeroed; answer the entry point.
+// A segment that writes nothing needs no region. Every segment is checked before any is written, so a
+// refusal leaves the regions as they were.
 load(e: Elf, regions: []Region) -> Result[u64, ElfError]
     val all = e.segments()
 
@@ -415,17 +427,20 @@ load(e: Elf, regions: []Region) -> Result[u64, ElfError]
 
         e.segment_bytes(s)?
 
-        if region_of(regions, address_of(s), s.memsz).is_none() then return Err(ElfError.Unplaced)
+        if extent_of(s) == 0 then continue
+        if region_of(regions, address_of(s), extent_of(s)).is_none() then return Err(ElfError.Unplaced)
 
     for s in all.view()
-        if s.kind != PT_LOAD || s.memsz == 0 then continue
+        if s.kind != PT_LOAD || s.memsz == 0 || extent_of(s) == 0 then continue
 
-        val r = regions[region_of(regions, address_of(s), s.memsz).unwrap()]
+        val r = regions[region_of(regions, address_of(s), extent_of(s)).unwrap()]
         val from = e.segment_bytes(s)?
         val at = usize(address_of(s) - r.base)
 
         for i in 0..<from.len do r.bytes[at + i] = from[i]
-        for i in usize(s.filesz)..<usize(s.memsz) do r.bytes[at + i] = 0
+
+        if zeroes_tail(s)
+            for i in usize(s.filesz)..<usize(s.memsz) do r.bytes[at + i] = 0
 
     Ok(e.header.entry)
 

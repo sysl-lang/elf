@@ -320,12 +320,161 @@ elf_load()
     // .data is four bytes, 42, followed by .bss's 256 zeroed; past that nothing was written.
     if option_place_by == "physical"
         assert(flash.at(0x2C) == 42 && flash.at(0x2F) == 0, ".data is loaded after .text, in flash")
-        assert(flash.at(0x30) == 0 && flash.at(0x12F) == 0, "and .bss is zeroed after it")
+        assert(flash.at(0x30) == 0xEE && flash.at(0x12F) == 0xEE, ".bss is not zeroed at the load address")
         assert(flash.at(0x130) == 0xEE && ram.at(0) == 0xEE, "and nothing else is touched")
     else
         assert(ram.at(0) == 42 && ram.at(3) == 0, ".data is placed where it runs, in RAM")
         assert(ram.at(4) == 0 && ram.at(0x103) == 0, "and .bss is zeroed after it")
         assert(ram.at(0x104) == 0xEE && flash.at(0x2C) == 0xEE, "and nothing else is touched")
+
+// The ARM file with its data segment (program header 1, at 52 + 32) given these addresses and sizes;
+// its file bytes stay the four at 0x2000, 42 then zeros.
+with_data(vaddr: u32, paddr: u32, filesz: u32, memsz: u32) -> Buf[u8]
+    var b = copy_of(arm)
+
+    patch32(&b, 84 + 8, vaddr)
+    patch32(&b, 84 + 12, paddr)
+    patch32(&b, 84 + 16, filesz)
+    patch32(&b, 84 + 20, memsz)
+    b
+
+// Whether `n` bytes from `from` are all `v`.
+all_are(b: *Buf[u8], from: usize, n: usize, v: u8) -> bool
+    for i in from..<from + n
+        if b.at(i) != v then return false
+
+    true
+
+@test("a segment with no file bytes at a load address other than its run address writes nothing there")
+elf_load_bss_only()
+    if unread(arm, false, false) then return
+
+    // .bss alone: run at 0x20000000, stored (as the linker records it) in the middle of flash.
+    var b = with_data(0x20000000, 0x10000100, 0, 0x210)
+    val e = opened(b.view())
+    var flash = filled(0x300)
+    var ram = filled(0x400)
+    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+
+    assert(load(e, regions).unwrap() == 0x10000021, "the entry point")
+    assert(all_are(&flash, 0x2C, 0x2D4, 0xEE), "flash past .text is untouched")
+
+    if option_place_by == "physical"
+        assert(all_are(&ram, 0, 0x400, 0xEE), "RAM is untouched: the program zeroes .bss itself")
+    else
+        assert(all_are(&ram, 0, 0x210, 0) && ram.at(0x210) == 0xEE, "a loader zeroes .bss where it runs")
+
+    // The same segment stored inside .text, or past the end of flash: still no write, still no region.
+    b = with_data(0x20000000, 0x10000010, 0, 0x210)
+    flash = filled(0x300)
+    ram = filled(0x400)
+
+    val over: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+
+    assert(load(opened(b.view()), over).is_ok(), "loads")
+
+    val text = opened(b.view()).section_bytes(opened(b.view()).section_named(".text").unwrap()).unwrap()
+
+    for i in 0..<text.len do assert(flash.at(i) == text[i], ".text is intact")
+
+    if option_place_by == "physical"
+        var only_ram = filled(0x400)
+        var tiny = filled(0x2C)
+        b = with_data(0x20000000, 0x30000000, 0, 0x210)
+
+        val elsewhere: []Region = [Region(0x10000000, tiny.view()), Region(0x20000000, only_ram.view())]
+
+        assert(load(opened(b.view()), elsewhere).is_ok(), "a load address in no region is no refusal when nothing is written")
+        assert(all_are(&only_ram, 0, 0x400, 0xEE), "and nothing is written")
+
+@test("a segment loaded where it runs has its tail zeroed whatever place_by says")
+elf_load_same_address()
+    if unread(arm, false, false) then return
+
+    val b = with_data(0x20000000, 0x20000000, 4, 0x10)
+    var flash = filled(0x300)
+    var ram = filled(0x400)
+    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+
+    assert(load(opened(b.view()), regions).is_ok(), "loads")
+    assert(ram.at(0) == 42 && ram.at(3) == 0, "the file bytes")
+    assert(all_are(&ram, 4, 12, 0) && ram.at(0x10) == 0xEE, "the tail is zeroed, and no further")
+    assert(all_are(&flash, 0x2C, 0x2D4, 0xEE), "flash past .text is untouched")
+
+@test("a segment with file bytes at a load address other than its run address gets only those bytes")
+elf_load_file_bytes_only()
+    if unread(arm, false, false) then return
+
+    val b = with_data(0x20000000, 0x10000100, 4, 0x200)
+    var flash = filled(0x300)
+    var ram = filled(0x400)
+    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+
+    assert(load(opened(b.view()), regions).is_ok(), "loads")
+
+    if option_place_by == "physical"
+        assert(flash.at(0x100) == 42 && flash.at(0x103) == 0, "the file bytes are at the load address")
+        assert(flash.at(0x104) == 0xEE && all_are(&flash, 0x104, 0x1FC, 0xEE), "and nothing follows them")
+        assert(all_are(&ram, 0, 0x400, 0xEE), "RAM is untouched")
+    else
+        assert(ram.at(0) == 42 && all_are(&ram, 4, 0x1FC, 0) && ram.at(0x200) == 0xEE, "run address: bytes then zeros")
+        assert(all_are(&flash, 0x2C, 0x2D4, 0xEE), "flash past .text is untouched")
+
+@test("a segment at the very end of a region fits, and one byte short is refused")
+elf_load_region_end()
+    if unread(arm, false, false) then return
+
+    // Stored at 0x10000100 with 4 file bytes and a 0x200 memory size; run at 0x20000000.
+    val b = with_data(0x20000000, 0x10000100, 4, 0x200)
+    var exact = filled(0x104)
+    var ram = filled(0x200)
+    var short = filled(0x103)
+    var ram_short = filled(0x1FF)
+    val fits: []Region = [Region(0x10000000, exact.view()), Region(0x20000000, ram.view())]
+    val tight: []Region = [Region(0x10000000, short.view()), Region(0x20000000, ram_short.view())]
+
+    // Physical placement writes four bytes, so flash ending at 0x104 holds them and RAM is not needed.
+    // Virtual placement writes 0x200 bytes into RAM, which must hold all of them.
+    assert(load(opened(b.view()), fits).is_ok(), "exactly fits")
+    assert(load(opened(b.view()), tight).is_err(), "one byte short is refused")
+
+    if option_place_by == "physical"
+        assert(exact.at(0x100) == 42 && exact.at(0x103) == 0, "the last four bytes of flash")
+    else
+        assert(ram.at(0) == 42 && ram.at(0x1FF) == 0, "the last byte of RAM")
+
+@test("overlapping segments: the later one wins where they meet and the earlier one is intact elsewhere")
+elf_load_overlap()
+    if unread(arm, false, false) then return
+
+    // The data segment lands inside .text at 0x10000020, run and stored at the same address.
+    val b = with_data(0x10000020, 0x10000020, 4, 0x10)
+    val e = opened(b.view())
+    val text = e.section_bytes(e.section_named(".text").unwrap()).unwrap()
+    var flash = filled(0x100)
+    val regions: []Region = [Region(0x10000000, flash.view())]
+
+    assert(load(e, regions).is_ok(), "loads")
+
+    for i in 0..<0x20 do assert(flash.at(i) == text[i], ".text before the overlap is intact")
+
+    assert(flash.at(0x20) == 42 && flash.at(0x23) == 0, "the later segment's bytes")
+    assert(all_are(&flash, 0x24, 12, 0) && flash.at(0x30) == 0xEE, "and its zeroed tail, no further")
+
+@test("a segment larger on file than in memory is refused before anything is written")
+elf_load_filesz_over_memsz()
+    if unread(arm, false, false) then return
+
+    val b = with_data(0x20000000, 0x10000100, 4, 2)
+    var flash = filled(0x300)
+    var ram = filled(0x400)
+    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+
+    load(opened(b.view()), regions) match
+        Ok(_) -> assert(false, "refused")
+        Err(why) -> assert(why == ElfError.Malformed, "as malformed")
+
+    assert(all_are(&flash, 0, 0x300, 0xEE), "and .text was not written either")
 
 @test("a segment outside every region, or across two, is refused before anything is written")
 elf_load_unplaced()
