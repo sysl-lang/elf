@@ -64,8 +64,8 @@ elf_arm_segments()
 
     assert(s.len() == 2, "two")
 
-    val code = s.at(0)
-    val data = s.at(1)
+    val code = s[0]
+    val data = s[1]
 
     assert(code.kind == PT_LOAD && code.offset == 0x1000 && code.vaddr == 0x10000000, "code")
     assert(code.paddr == 0x10000000 && code.filesz == 0x2C && code.memsz == 0x2C, "code sizes")
@@ -87,7 +87,7 @@ elf_arm_sections()
     val want: []string = ["", ".text", ".data", ".bss", ".comment", ".ARM.attributes", ".symtab", ".strtab", ".shstrtab"]
 
     assert(n.len() == want.len, "nine")
-    for i in 0..<want.len do assert(n.at(i) == want[i], s"section $i is ${want[i]}")
+    for i in 0..<want.len do assert(n[i] == want[i], s"section $i is ${want[i]}")
 
     val text = e.section(1)
 
@@ -114,15 +114,15 @@ elf_arm_symbols()
 
     assert(all.len() == 16, "sixteen")
 
-    val null_sym = all.at(0)
+    val null_sym = all[0]
 
     assert(null_sym.name.len == 0 && null_sym.shndx == SHN_UNDEF, "the null symbol")
 
-    val file = all.at(6)
+    val file = all[6]
 
     assert(file.name == "arm.c".bytes && file.kind == STT_FILE && file.bind == STB_LOCAL && file.shndx == SHN_ABS, "the file")
 
-    val start = all.at(13)
+    val start = all[13]
 
     assert(start.name == "_start".bytes && start.value == 0x10000021 && start.size == 10, "_start")
     assert(start.kind == STT_FUNC && start.bind == STB_GLOBAL && start.shndx == 1 && start.other == 0, "a global function")
@@ -148,9 +148,9 @@ elf_aarch64()
     assert(h.phentsize == 56 && h.phnum == 5 && h.shentsize == 64 && h.shnum == 7 && h.shstrndx == 5, "tables")
 
     val s = e.segments()
-    val phdr = s.at(0)
-    val data = s.at(3)
-    val stack = s.at(4)
+    val phdr = s[0]
+    val data = s[3]
+    val stack = s[4]
 
     assert(phdr.kind == PT_PHDR && phdr.offset == 0x40 && phdr.vaddr == 0x200040 && phdr.filesz == 0x118, "PHDR")
     assert(phdr.flags == PF_R && phdr.align == 8, "PHDR is read-only")
@@ -188,8 +188,8 @@ elf_riscv()
         if s.kind == PT_LOAD then loads.push(s)
 
     assert(loads.len() == 3, "three loads")
-    assert(loads.at(1).vaddr == 0x11190 && loads.at(1).filesz == 0xE && loads.at(1).flags == PF_R | PF_X, "code")
-    assert(loads.at(2).vaddr == 0x121A0 && loads.at(2).filesz == 4 && loads.at(2).flags == PF_R | PF_W, "data")
+    assert(loads[1].vaddr == 0x11190 && loads[1].filesz == 0xE && loads[1].flags == PF_R | PF_X, "code")
+    assert(loads[2].vaddr == 0x121A0 && loads[2].filesz == 4 && loads[2].flags == PF_R | PF_W, "data")
 
     val deeper = e.symbol_named("deeper").unwrap().unwrap()
     val start = e.symbol_named("_start").unwrap().unwrap()
@@ -210,14 +210,14 @@ elf_shared()
     val dynamic = e.dynamic_symbols().unwrap()
 
     assert(dynamic.len() == 3, "three dynamic symbols")
-    assert(dynamic.at(1).name == "shared_add".bytes && dynamic.at(1).value == 0x1330 && dynamic.at(1).size == 12, "shared_add")
-    assert(dynamic.at(1).kind == STT_FUNC && dynamic.at(1).bind == STB_GLOBAL && dynamic.at(1).shndx == 7, "a global function")
-    assert(dynamic.at(2).name == "shared_count".bytes && dynamic.at(2).value == 0x33D8 && dynamic.at(2).shndx == 11, "shared_count")
+    assert(dynamic[1].name == "shared_add".bytes && dynamic[1].value == 0x1330 && dynamic[1].size == 12, "shared_add")
+    assert(dynamic[1].kind == STT_FUNC && dynamic[1].bind == STB_GLOBAL && dynamic[1].shndx == 7, "a global function")
+    assert(dynamic[2].name == "shared_count".bytes && dynamic[2].value == 0x33D8 && dynamic[2].shndx == 11, "shared_count")
 
     val local = e.symbols().unwrap()
 
     assert(local.len() == 5, "five static symbols")
-    assert(local.at(2).name == "_DYNAMIC".bytes && local.at(2).bind == STB_LOCAL && local.at(2).other == 2, "a hidden local")
+    assert(local[2].name == "_DYNAMIC".bytes && local[2].bind == STB_LOCAL && local[2].other == 2, "a hidden local")
 
 // ---------------------------------------------------------------------------------------------------
 // Big-endian.
@@ -260,7 +260,7 @@ copy_of(bytes: []const u8) -> Buf[u8]
 
 // Write `x` little-endian at `at`.
 patch32(b: *Buf[u8], at: usize, x: u32)
-    for i in 0usize..<4 do b.set(at + i, u8((x >> (u32(i) * 8)) & 0xFF))
+    for i in 0usize..<4 do b[at + i] = u8((x >> (u32(i) * 8)) & 0xFF)
 
 refused(bytes: []const u8, want: ElfError) -> bool = read(bytes) match
     Ok(_) -> false
@@ -275,17 +275,17 @@ elf_refused()
 
     var b = copy_of(arm)
 
-    b.set(4, 3)
+    b[4] = 3
     assert(refused(b.view(), ElfError.BadIdent), "class 3")
     b = copy_of(arm)
-    b.set(5, 0)
+    b[5] = 0
     assert(refused(b.view(), ElfError.BadIdent), "byte order 0")
 
     if reads(false, false)
         assert(refused(arm[..<40], ElfError.Truncated), "ends inside the ELF-32 header")
         assert(refused(arm[..<8000], ElfError.Truncated), "the section header table is past the end")
         b = copy_of(arm)
-        b.set(42, 16)
+        b[42] = 16
         assert(refused(b.view(), ElfError.Malformed), "program headers smaller than the specification's")
 
     if reads(true, false)
@@ -315,17 +315,17 @@ elf_load()
 
     assert(load(e, regions).unwrap() == 0x10000021, "the entry point")
 
-    for i in 0..<text.len do assert(flash.at(i) == text[i], ".text is at the start of flash")
+    for i in 0..<text.len do assert(flash[i] == text[i], ".text is at the start of flash")
 
     // .data is four bytes, 42, followed by .bss's 256 zeroed; past that nothing was written.
     if option_place_by == "physical"
-        assert(flash.at(0x2C) == 42 && flash.at(0x2F) == 0, ".data is loaded after .text, in flash")
-        assert(flash.at(0x30) == 0xEE && flash.at(0x12F) == 0xEE, ".bss is not zeroed at the load address")
-        assert(flash.at(0x130) == 0xEE && ram.at(0) == 0xEE, "and nothing else is touched")
+        assert(flash[0x2C] == 42 && flash[0x2F] == 0, ".data is loaded after .text, in flash")
+        assert(flash[0x30] == 0xEE && flash[0x12F] == 0xEE, ".bss is not zeroed at the load address")
+        assert(flash[0x130] == 0xEE && ram[0] == 0xEE, "and nothing else is touched")
     else
-        assert(ram.at(0) == 42 && ram.at(3) == 0, ".data is placed where it runs, in RAM")
-        assert(ram.at(4) == 0 && ram.at(0x103) == 0, "and .bss is zeroed after it")
-        assert(ram.at(0x104) == 0xEE && flash.at(0x2C) == 0xEE, "and nothing else is touched")
+        assert(ram[0] == 42 && ram[3] == 0, ".data is placed where it runs, in RAM")
+        assert(ram[4] == 0 && ram[0x103] == 0, "and .bss is zeroed after it")
+        assert(ram[0x104] == 0xEE && flash[0x2C] == 0xEE, "and nothing else is touched")
 
 // The ARM file with its data segment (program header 1, at 52 + 32) given these addresses and sizes;
 // its file bytes stay the four at 0x2000, 42 then zeros.
@@ -341,7 +341,7 @@ with_data(vaddr: u32, paddr: u32, filesz: u32, memsz: u32) -> Buf[u8]
 // Whether `n` bytes from `from` are all `v`.
 all_are(b: *Buf[u8], from: usize, n: usize, v: u8) -> bool
     for i in from..<from + n
-        if b.at(i) != v then return false
+        if b[i] != v then return false
 
     true
 
@@ -362,7 +362,7 @@ elf_load_bss_only()
     if option_place_by == "physical"
         assert(all_are(&ram, 0, 0x400, 0xEE), "RAM is untouched: the program zeroes .bss itself")
     else
-        assert(all_are(&ram, 0, 0x210, 0) && ram.at(0x210) == 0xEE, "a loader zeroes .bss where it runs")
+        assert(all_are(&ram, 0, 0x210, 0) && ram[0x210] == 0xEE, "a loader zeroes .bss where it runs")
 
     // The same segment stored inside .text, or past the end of flash: still no write, still no region.
     b = with_data(0x20000000, 0x10000010, 0, 0x210)
@@ -375,7 +375,7 @@ elf_load_bss_only()
 
     val text = opened(b.view()).section_bytes(opened(b.view()).section_named(".text").unwrap()).unwrap()
 
-    for i in 0..<text.len do assert(flash.at(i) == text[i], ".text is intact")
+    for i in 0..<text.len do assert(flash[i] == text[i], ".text is intact")
 
     if option_place_by == "physical"
         var only_ram = filled(0x400)
@@ -397,8 +397,8 @@ elf_load_same_address()
     val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
 
     assert(load(opened(b.view()), regions).is_ok(), "loads")
-    assert(ram.at(0) == 42 && ram.at(3) == 0, "the file bytes")
-    assert(all_are(&ram, 4, 12, 0) && ram.at(0x10) == 0xEE, "the tail is zeroed, and no further")
+    assert(ram[0] == 42 && ram[3] == 0, "the file bytes")
+    assert(all_are(&ram, 4, 12, 0) && ram[0x10] == 0xEE, "the tail is zeroed, and no further")
     assert(all_are(&flash, 0x2C, 0x2D4, 0xEE), "flash past .text is untouched")
 
 @test("a segment with file bytes at a load address other than its run address gets only those bytes")
@@ -413,11 +413,11 @@ elf_load_file_bytes_only()
     assert(load(opened(b.view()), regions).is_ok(), "loads")
 
     if option_place_by == "physical"
-        assert(flash.at(0x100) == 42 && flash.at(0x103) == 0, "the file bytes are at the load address")
-        assert(flash.at(0x104) == 0xEE && all_are(&flash, 0x104, 0x1FC, 0xEE), "and nothing follows them")
+        assert(flash[0x100] == 42 && flash[0x103] == 0, "the file bytes are at the load address")
+        assert(flash[0x104] == 0xEE && all_are(&flash, 0x104, 0x1FC, 0xEE), "and nothing follows them")
         assert(all_are(&ram, 0, 0x400, 0xEE), "RAM is untouched")
     else
-        assert(ram.at(0) == 42 && all_are(&ram, 4, 0x1FC, 0) && ram.at(0x200) == 0xEE, "run address: bytes then zeros")
+        assert(ram[0] == 42 && all_are(&ram, 4, 0x1FC, 0) && ram[0x200] == 0xEE, "run address: bytes then zeros")
         assert(all_are(&flash, 0x2C, 0x2D4, 0xEE), "flash past .text is untouched")
 
 @test("a segment at the very end of a region fits, and one byte short is refused")
@@ -439,9 +439,9 @@ elf_load_region_end()
     assert(load(opened(b.view()), tight).is_err(), "one byte short is refused")
 
     if option_place_by == "physical"
-        assert(exact.at(0x100) == 42 && exact.at(0x103) == 0, "the last four bytes of flash")
+        assert(exact[0x100] == 42 && exact[0x103] == 0, "the last four bytes of flash")
     else
-        assert(ram.at(0) == 42 && ram.at(0x1FF) == 0, "the last byte of RAM")
+        assert(ram[0] == 42 && ram[0x1FF] == 0, "the last byte of RAM")
 
 @test("overlapping segments: the later one wins where they meet and the earlier one is intact elsewhere")
 elf_load_overlap()
@@ -456,10 +456,10 @@ elf_load_overlap()
 
     assert(load(e, regions).is_ok(), "loads")
 
-    for i in 0..<0x20 do assert(flash.at(i) == text[i], ".text before the overlap is intact")
+    for i in 0..<0x20 do assert(flash[i] == text[i], ".text before the overlap is intact")
 
-    assert(flash.at(0x20) == 42 && flash.at(0x23) == 0, "the later segment's bytes")
-    assert(all_are(&flash, 0x24, 12, 0) && flash.at(0x30) == 0xEE, "and its zeroed tail, no further")
+    assert(flash[0x20] == 42 && flash[0x23] == 0, "the later segment's bytes")
+    assert(all_are(&flash, 0x24, 12, 0) && flash[0x30] == 0xEE, "and its zeroed tail, no further")
 
 @test("a segment larger on file than in memory is refused before anything is written")
 elf_load_filesz_over_memsz()
@@ -487,7 +487,7 @@ elf_load_unplaced()
     val only_text: []Region = [Region(0x10000000, small.view())]
 
     assert(load(e, only_text).is_err(), "refused")
-    for i in 0..<small.len() do assert(small.at(i) == 0xEE, "and .text was not written either")
+    for i in 0..<small.len() do assert(small[i] == 0xEE, "and .text was not written either")
 
     // Two regions that meet inside the data segment, wherever place_by puts it.
     val data = e.segment(1)
@@ -508,7 +508,7 @@ elf_load_64()
         val regions: []Region = [Region(0x10000, mem.view())]
 
         assert(load(e, regions).unwrap() == 0x1119C, "the entry point")
-        assert(mem.at(0x21A0) == 3 && mem.at(0x21A3) == 0, "level is 3, at 0x121A0")
+        assert(mem[0x21A0] == 3 && mem[0x21A3] == 0, "level is 3, at 0x121A0")
 
     if !unread(big, false, true)
         val o = opened(big)
@@ -516,7 +516,7 @@ elf_load_64()
         val regions: []Region = [Region(0, mem.view())]
 
         assert(load(o, regions).unwrap() == 0, "an object has no segments and no entry")
-        assert(mem.at(0) == 0xEE, "and writes nothing")
+        assert(mem[0] == 0xEE, "and writes nothing")
 
 @test("contents past the end, a short symbol entry and an unterminated name are refused when asked for")
 elf_damaged()
@@ -553,7 +553,7 @@ elf_no_names()
 
     var b = copy_of(arm)
 
-    b.set(50, 99)
+    b[50] = 99
 
     val e = opened(b.view())
 
