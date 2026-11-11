@@ -311,7 +311,7 @@ elf_load()
     val text = e.section_bytes(e.section_named(".text").unwrap()).unwrap()
     var flash = filled(0x10000)
     var ram = filled(0x4000)
-    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+    val regions: []Region = [Region(0x10000000, flash.view_mut()), Region(0x20000000, ram.view_mut())]
 
     assert(load(e, regions).unwrap() == 0x10000021, "the entry point")
 
@@ -354,7 +354,7 @@ elf_load_bss_only()
     val e = opened(b.view())
     var flash = filled(0x300)
     var ram = filled(0x400)
-    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+    val regions: []Region = [Region(0x10000000, flash.view_mut()), Region(0x20000000, ram.view_mut())]
 
     assert(load(e, regions).unwrap() == 0x10000021, "the entry point")
     assert(all_are(&flash, 0x2C, 0x2D4, 0xEE), "flash past .text is untouched")
@@ -366,23 +366,23 @@ elf_load_bss_only()
 
     // The same segment stored inside .text, or past the end of flash: still no write, still no region.
     b = with_data(0x20000000, 0x10000010, 0, 0x210)
-    flash = filled(0x300)
-    ram = filled(0x400)
+    var inside = filled(0x300)
+    var inside_ram = filled(0x400)
 
-    val over: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+    val over: []Region = [Region(0x10000000, inside.view_mut()), Region(0x20000000, inside_ram.view_mut())]
 
     assert(load(opened(b.view()), over).is_ok(), "loads")
 
     val text = opened(b.view()).section_bytes(opened(b.view()).section_named(".text").unwrap()).unwrap()
 
-    for i in 0..<text.len do assert(flash[i] == text[i], ".text is intact")
+    for i in 0..<text.len do assert(inside[i] == text[i], ".text is intact")
 
     if option_place_by == "physical"
         var only_ram = filled(0x400)
         var tiny = filled(0x2C)
         b = with_data(0x20000000, 0x30000000, 0, 0x210)
 
-        val elsewhere: []Region = [Region(0x10000000, tiny.view()), Region(0x20000000, only_ram.view())]
+        val elsewhere: []Region = [Region(0x10000000, tiny.view_mut()), Region(0x20000000, only_ram.view_mut())]
 
         assert(load(opened(b.view()), elsewhere).is_ok(), "a load address in no region is no refusal when nothing is written")
         assert(all_are(&only_ram, 0, 0x400, 0xEE), "and nothing is written")
@@ -394,7 +394,7 @@ elf_load_same_address()
     val b = with_data(0x20000000, 0x20000000, 4, 0x10)
     var flash = filled(0x300)
     var ram = filled(0x400)
-    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+    val regions: []Region = [Region(0x10000000, flash.view_mut()), Region(0x20000000, ram.view_mut())]
 
     assert(load(opened(b.view()), regions).is_ok(), "loads")
     assert(ram[0] == 42 && ram[3] == 0, "the file bytes")
@@ -408,7 +408,7 @@ elf_load_file_bytes_only()
     val b = with_data(0x20000000, 0x10000100, 4, 0x200)
     var flash = filled(0x300)
     var ram = filled(0x400)
-    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+    val regions: []Region = [Region(0x10000000, flash.view_mut()), Region(0x20000000, ram.view_mut())]
 
     assert(load(opened(b.view()), regions).is_ok(), "loads")
 
@@ -430,8 +430,8 @@ elf_load_region_end()
     var ram = filled(0x200)
     var short = filled(0x103)
     var ram_short = filled(0x1FF)
-    val fits: []Region = [Region(0x10000000, exact.view()), Region(0x20000000, ram.view())]
-    val tight: []Region = [Region(0x10000000, short.view()), Region(0x20000000, ram_short.view())]
+    val fits: []Region = [Region(0x10000000, exact.view_mut()), Region(0x20000000, ram.view_mut())]
+    val tight: []Region = [Region(0x10000000, short.view_mut()), Region(0x20000000, ram_short.view_mut())]
 
     // Physical placement writes four bytes, so flash ending at 0x104 holds them and RAM is not needed.
     // Virtual placement writes 0x200 bytes into RAM, which must hold all of them.
@@ -452,7 +452,7 @@ elf_load_overlap()
     val e = opened(b.view())
     val text = e.section_bytes(e.section_named(".text").unwrap()).unwrap()
     var flash = filled(0x100)
-    val regions: []Region = [Region(0x10000000, flash.view())]
+    val regions: []Region = [Region(0x10000000, flash.view_mut())]
 
     assert(load(e, regions).is_ok(), "loads")
 
@@ -468,7 +468,7 @@ elf_load_filesz_over_memsz()
     val b = with_data(0x20000000, 0x10000100, 4, 2)
     var flash = filled(0x300)
     var ram = filled(0x400)
-    val regions: []Region = [Region(0x10000000, flash.view()), Region(0x20000000, ram.view())]
+    val regions: []Region = [Region(0x10000000, flash.view_mut()), Region(0x20000000, ram.view_mut())]
 
     load(opened(b.view()), regions) match
         Ok(_) -> assert(false, "refused")
@@ -484,7 +484,7 @@ elf_load_unplaced()
 
     // Flash only as large as .text: the data segment, wherever place_by puts it, has nowhere to go.
     var small = filled(0x2C)
-    val only_text: []Region = [Region(0x10000000, small.view())]
+    val only_text: []Region = [Region(0x10000000, small.view_mut())]
 
     assert(load(e, only_text).is_err(), "refused")
     for i in 0..<small.len() do assert(small[i] == 0xEE, "and .text was not written either")
@@ -494,7 +494,7 @@ elf_load_unplaced()
     val at = address_of(data)
     var low = filled(usize(at - 0x10000000 + 2))
     var high = filled(0x4000)
-    val split: []Region = [Region(0x10000000, low.view()), Region(at + 2, high.view())]
+    val split: []Region = [Region(0x10000000, low.view_mut()), Region(at + 2, high.view_mut())]
 
     load(e, split) match
         Ok(_) -> assert(false, "a segment across two regions is refused")
@@ -505,7 +505,7 @@ elf_load_64()
     if !unread(riscv, true, false)
         val e = opened(riscv)
         var mem = filled(0x3000)
-        val regions: []Region = [Region(0x10000, mem.view())]
+        val regions: []Region = [Region(0x10000, mem.view_mut())]
 
         assert(load(e, regions).unwrap() == 0x1119C, "the entry point")
         assert(mem[0x21A0] == 3 && mem[0x21A3] == 0, "level is 3, at 0x121A0")
@@ -513,7 +513,7 @@ elf_load_64()
     if !unread(big, false, true)
         val o = opened(big)
         var mem = filled(16)
-        val regions: []Region = [Region(0, mem.view())]
+        val regions: []Region = [Region(0, mem.view_mut())]
 
         assert(load(o, regions).unwrap() == 0, "an object has no segments and no entry")
         assert(mem[0] == 0xEE, "and writes nothing")
